@@ -1,0 +1,53 @@
+import socket
+import pygame
+import math
+import time
+
+PI_IP = "192.168.0.130"
+PORT = 5000
+
+# Socket
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.connect((PI_IP, PORT))
+print("Connected to Raspberry Pi")
+
+# Pygame joystick
+pygame.init()
+pygame.joystick.init()
+joystick = pygame.joystick.Joystick(0)
+joystick.init()
+
+while True:
+    pygame.event.pump()
+
+    # 左搖桿 X, Y
+    lx = joystick.get_axis(0)   # -1.0 ~ +1.0
+    ly = (joystick.get_axis(1)*-1)
+    ll = (lx**2+ly**2)**0.5
+    lo = (math.degrees(math.atan2(ly, lx)) + 360) % 360
+
+    # 右搖桿 X, Y 
+    rx = joystick.get_axis(2)
+    ry = (joystick.get_axis(3)*-1)
+    rl = (rx**2+ry**2)**0.5
+
+    # A / B / X / Y 按鈕（Xbox 配置）
+    a_button = joystick.get_button(0)  # A
+    b_button = joystick.get_button(1)  # B
+    x_button = joystick.get_button(2)  # X
+    y_button = joystick.get_button(3)  # Y
+
+    #MOTOR 1~4
+    motor1 = ly + lx
+    motor2 = ly - lx
+    motor3 = motor1
+    motor4 = motor2
+
+    # 限幅
+    motors = [motor1, motor2, motor3, motor4]
+    motors = [max(-1, min(1, m)) for m in motors]
+
+    msg =   f"{lx:.2f}, {ly:.2f}, {ll:.2f}, {lo:.2f}, {rx:.2f}, {ry:.2f}, {rl:.2f}, {a_button}, {b_button}, {x_button}, {y_button}, {motors[0]:.2f},{motors[1]:.2f},{motors[2]:.2f},{motors[3]:.2f}\n"
+    sock.sendall(msg.encode())
+
+    time.sleep(0.05)
