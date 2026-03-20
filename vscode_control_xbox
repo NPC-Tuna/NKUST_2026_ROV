@@ -1,0 +1,385 @@
+import socket
+import pygame
+import time
+import sys
+import cv2
+import numpy as np
+import io
+
+
+# 網路連線設定
+HOST = "192.168.0.101" 
+PORT = 5000
+# 搖桿與控制設定
+
+DEADZONE = 0.05 
+
+def apply_deadzone(value, deadzone=DEADZONE):
+    if abs(value) < deadzone:
+        return 0.0
+    return value
+
+def draw_joystick(surface, x, y, val_x, val_y, title, font):
+    COLOR = (0, 255, 128, 150)
+    GRID_COLOR = (40, 60, 80, 100)
+    
+    temp_surface = pygame.Surface((180, 180), pygame.SRCALPHA)
+    pygame.draw.circle(temp_surface, COLOR, (90, 90), 80, 2)
+    pygame.draw.line(temp_surface, GRID_COLOR, (90, 0), (90, 180), 1)
+    pygame.draw.line(temp_surface, GRID_COLOR, (0, 90), (180, 90), 1)
+    
+    dot_x = 90 + int(val_x * 80)
+    dot_y = 90 - int(val_y * 80)
+    
+    pygame.draw.line(temp_surface, (0, 255, 128), (90, 90), (dot_x, dot_y), 2)
+    pygame.draw.circle(temp_surface, (0, 255, 128), (dot_x, dot_y), 8)
+    surface.blit(temp_surface, (x - 90, y - 90))
+    
+    title_surface = font.render(title, True, (200, 220, 255))
+    val_surface = font.render(f"X: {val_x:.2f} | Y: {val_y:.2f}", True, (0, 255, 128))
+    
+    bg_rect = title_surface.get_rect(center=(x, y - 110))
+    pygame.draw.rect(surface, (0, 0, 0, 150), bg_rect.inflate(10, 4))
+    surface.blit(title_surface, bg_rect)
+    
+    val_rect = val_surface.get_rect(center=(x, y + 105))
+    pygame.draw.rect(surface, (0, 0, 0, 150), val_rect.inflate(10, 4))
+    surface.blit(val_surface, val_rect)
+
+def draw_status_box(surface, x, y, w, h, title, status_text, is_active, font, active_color=(0, 255, 128)):
+    BG_COLOR = (5, 10, 15, 180) if is_active else (2, 5, 8, 120)
+    COLOR = active_color if is_active else (100, 100, 100)
+    
+    bg_surface = pygame.Surface((w, h), pygame.SRCALPHA)
+    bg_surface.fill(BG_COLOR)
+    pygame.draw.rect(bg_surface, COLOR, (0, 0, w, h), 2, border_radius=3)
+    surface.blit(bg_surface, (x, y))
+
+    title_surf = font.render(title, True, (180, 180, 180))
+    status_surf = font.render(status_text, True, COLOR)
+    surface.blit(title_surf, (x + 10, y + 10))
+    surface.blit(status_surf, (x + 10, y + 35))
+
+def draw_motor_gauge(surface, x, y, w, h, title, percentage, font, color=(0, 200, 255)):
+    percentage = max(min(percentage, 1.0), -1.0)
+    
+    gauge_surf = pygame.Surface((w, h), pygame.SRCALPHA)
+    gauge_surf.fill((5, 10, 15, 150))
+    pygame.draw.rect(gauge_surf, color, (0, 0, w, h), 2, border_radius=3)
+    
+    center_y = h // 2
+    bar_height = int(abs(percentage) * (h / 2))
+    
+    if percentage >= 0:
+        pygame.draw.rect(gauge_surf, color, (2, center_y - bar_height, w - 4, bar_height))
+    else:
+        pygame.draw.rect(gauge_surf, color, (2, center_y, w - 4, bar_height))
+        
+    pygame.draw.line(gauge_surf, (150, 150, 150), (0, center_y), (w, center_y), 2)
+    surface.blit(gauge_surf, (x, y))
+    
+    title_surf = font.render(title, True, (200, 200, 200))
+    val_surf = font.render(f"{percentage*100:+.0f}%", True, color)
+    
+    pygame.draw.rect(surface, (0, 0, 0, 150), (x, y - 25, title_surf.get_width(), 20))
+    surface.blit(title_surf, (x, y - 25))
+    
+    pygame.draw.rect(surface, (0, 0, 0, 150), (x, y + h + 5, val_surf.get_width(), 20))
+    surface.blit(val_surf, (x, y + h + 5))
+
+# 倒車顯影輔助線 UI 函數
+def draw_parking_guidelines(surface, width, height):
+    overlay = pygame.Surface((width, height), pygame.SRCALPHA)
+    
+    y_bottom = height - 50 
+    y_top = height // 2 + 50 
+    
+    x_left_bottom = 200
+    x_right_bottom = width - 200
+    x_left_top = 400
+    x_right_top = width - 400
+    
+    pygame.draw.line(overlay, (0, 255, 128, 150), (x_left_bottom, y_bottom), (x_left_top, y_top), 4)
+    pygame.draw.line(overlay, (0, 255, 128, 150), (x_right_bottom, y_bottom), (x_right_top, y_top), 4)
+
+    pygame.draw.line(overlay, (0, 255, 128, 150), (x_left_top, y_top), (x_right_top, y_top), 3)
+
+    y_yellow = y_bottom - int((y_bottom - y_top) * 0.6)
+    x_left_yellow = x_left_bottom + int((x_left_top - x_left_bottom) * 0.6)
+    x_right_yellow = x_right_bottom - int((x_right_bottom - x_right_top) * 0.6)
+    pygame.draw.line(overlay, (255, 255, 0, 180), (x_left_yellow, y_yellow), (x_right_yellow, y_yellow), 4)
+
+    y_red = y_bottom - int((y_bottom - y_top) * 0.2)
+    x_left_red = x_left_bottom + int((x_left_top - x_left_bottom) * 0.2)
+    x_right_red = x_right_bottom - int((x_right_bottom - x_right_top) * 0.2)
+    pygame.draw.line(overlay, (255, 50, 50, 200), (x_left_red, y_red), (x_right_red, y_red), 5)
+    
+    surface.blit(overlay, (0, 0))
+
+def main():
+    pygame.init()
+    pygame.joystick.init()
+
+    if pygame.joystick.get_count() == 0:
+        print("未偵測到任何遊戲搖桿！請確認搖桿已連接電腦。")
+        sys.exit()
+
+    joystick = pygame.joystick.Joystick(0)
+    joystick.init()
+    
+
+    # 系統初始化
+    WIDTH, HEIGHT = 1000, 600
+    
+    screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.FULLSCREEN | pygame.SCALED)
+    
+    pygame.display.set_caption("Abyss-OS 2.0 :: ROV FPV COMMAND CENTER")
+    
+    sys_font_large = pygame.font.SysFont("courier", 24, bold=True)
+    sys_font_mid = pygame.font.SysFont("courier", 16, bold=True)
+    sys_font_small = pygame.font.SysFont("courier", 12)
+
+    print("啟動本機攝影機...")
+    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+
+    client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    network_status = "ROV DISCONNECTED"
+    network_color = (255, 50, 50)
+    
+    try:
+        print(f"嘗試連線至樹莓派 {HOST}:{PORT}...")
+        client.connect((HOST, PORT))
+        network_status = f"LINK ESTABLISHED :: {HOST}:{PORT}"
+        network_color = (0, 255, 128)
+    except Exception as e:
+        print(f"連線失敗: {e}")
+
+    # 返航系統狀態變數
+    command_history = []          
+    auto_return_state = "OFF"     
+    coast_start_time = 0          
+    AUTO_SMOOTH_FACTOR = 0.15     
+    smooth_lx, smooth_ly = 0.0, 0.0 
+
+    target_sequence = [(0, 1), (0, -1), (-1, 0), (1, 0)]  
+    current_seq_idx = 0           
+    seq_start_time = 0            
+    prev_hat = (0, 0)             
+    prev_btn_a = False
+    hover_lock_state = False
+
+    running = True
+    try:
+        while running:
+            pygame.event.pump()
+            keys = pygame.key.get_pressed() 
+
+            msg = ["0"] * 18
+
+            # 緊急退出鍵 (搖桿 Button 7 或 鍵盤 ESC)
+            if joystick.get_button(7) or keys[pygame.K_ESCAPE]: 
+                msg[17] = "1"
+                running = False
+                
+            # 十字鍵密技偵測
+            current_hat = joystick.get_hat(0) if joystick.get_numhats() > 0 else (0, 0)
+            if current_hat != prev_hat and current_hat != (0, 0):
+                if current_seq_idx == 0:
+                    seq_start_time = time.time()  
+                if current_hat == target_sequence[current_seq_idx]:
+                    if time.time() - seq_start_time <= 3.0:
+                        current_seq_idx += 1
+                        if current_seq_idx == len(target_sequence):
+                            auto_return_state = "COASTING"
+                            coast_start_time = time.time()
+                            smooth_lx, smooth_ly = 0.0, 0.0 
+                            current_seq_idx = 0 
+                    else:
+                        current_seq_idx = 1 if current_hat == target_sequence[0] else 0
+                        seq_start_time = time.time()
+                else:
+                    current_seq_idx = 1 if current_hat == target_sequence[0] else 0
+                    if current_seq_idx == 1: seq_start_time = time.time()
+            prev_hat = current_hat
+
+            joy_lx, joy_ly, joy_rx, joy_ry = 0.0, 0.0, 0.0, 0.0
+            btn_lb, btn_rb = False, False
+            btn_grip_open, btn_grip_close = False, False
+
+            # A 鍵定深懸浮
+            btn_a = joystick.get_button(0)
+            trigger_hover_signal = False
+            if btn_a and not prev_btn_a:
+                msg[7] = "1"
+                trigger_hover_signal = True
+                hover_lock_state = not hover_lock_state
+            prev_btn_a = btn_a
+
+            # 狀態機：手動 vs 滑行 vs 自動返航
+            if auto_return_state == "OFF":
+                joy_lx = apply_deadzone(joystick.get_axis(0))
+                joy_ly = apply_deadzone(-joystick.get_axis(1)) 
+                joy_rx = apply_deadzone(joystick.get_axis(2) if joystick.get_numaxes() > 2 else 0.0)
+                joy_ry = apply_deadzone(-joystick.get_axis(3) if joystick.get_numaxes() > 3 else 0.0)
+
+                btn_lb = joystick.get_button(4)
+                btn_rb = joystick.get_button(5)
+                
+                # 替換為實際變數名，避免混淆
+                btn_grip_open = keys[pygame.K_a] 
+                btn_grip_close = keys[pygame.K_d] 
+
+                if running:
+                    command_history.append((joy_lx, joy_ly, joy_rx, joy_ry, btn_lb, btn_rb, btn_grip_open, btn_grip_close))
+
+            elif auto_return_state == "COASTING":
+                msg[8] = "1" 
+                joy_lx, joy_ly, joy_rx, joy_ry = 0.0, 0.0, 0.0, 0.0
+                
+                if time.time() - coast_start_time >= 1.5:
+                    auto_return_state = "RETURNING" 
+
+            elif auto_return_state == "RETURNING":
+                msg[8] = "1" 
+                if len(command_history) > 0:
+                    hist_lx, hist_ly, hist_rx, hist_ry, hist_lb, hist_rb, _, _ = command_history.pop()
+                    
+                    target_lx, target_ly = -hist_lx, -hist_ly
+                    
+                    smooth_lx += (target_lx - smooth_lx) * AUTO_SMOOTH_FACTOR
+                    smooth_ly += (target_ly - smooth_ly) * AUTO_SMOOTH_FACTOR
+                    
+                    joy_lx, joy_ly = smooth_lx, smooth_ly
+                    joy_rx, joy_ry = 0.0, 0.0 
+                    
+                    btn_lb, btn_rb = hist_rb, hist_lb 
+                    btn_grip_open, btn_grip_close = False, False  
+                else:
+                    auto_return_state = "OFF" 
+
+
+            # 打包數值傳送
+            msg[1] = f"{joy_lx:.3f}"
+            msg[2] = f"{joy_ly:.3f}"
+            msg[3] = f"{joy_rx:.3f}"
+            msg[4] = f"{joy_ry:.3f}"
+            if btn_grip_open: msg[5] = "1"  
+            if btn_grip_close: msg[6] = "1"  
+            if btn_lb: msg[15] = "1"
+            if btn_rb: msg[16] = "1"
+
+            data_str = ",".join(msg)
+            
+            if running and network_status.startswith("LINK"):
+                try:
+                    client.sendall((data_str + "\n").encode())
+                except:
+                    network_status = "ROV DISCONNECTED (TX FAIL)"
+                    network_color = (255, 50, 50)
+
+            # FPV 影像與 UI 渲染區塊
+
+            ret, frame = cap.read()
+            if ret:
+                frame = cv2.resize(frame, (WIDTH, HEIGHT))
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                frame_surface = pygame.image.frombuffer(frame_rgb.tobytes(), (WIDTH, HEIGHT), "RGB")
+                screen.blit(frame_surface, (0, 0))
+            else:
+                screen.fill((10, 15, 20))
+            
+            draw_parking_guidelines(screen, WIDTH, HEIGHT)
+
+            pygame.draw.rect(screen, (0, 0, 0, 150), (0, 0, WIDTH, 35))
+            sys_title = sys_font_large.render("Abyss-OS :: MATEROV COMMAND", True, (200, 220, 255))
+            net_status = sys_font_mid.render(network_status, True, network_color)
+            screen.blit(sys_title, (15, 5))
+            screen.blit(net_status, (WIDTH - net_status.get_width() - 15, 10))
+
+            left_thrust = joy_ly + joy_lx
+            right_thrust = joy_ly - joy_lx
+            vert_thrust = 1.0 if btn_lb else (-1.0 if btn_rb else 0.0)
+            yaw_thrust = joy_rx
+            
+
+            # 左側控制儀表板 (Gauge & Boxes)
+            gauge_y = 100
+            gauge_h = 200
+            left_ui_x = 20
+            draw_motor_gauge(screen, left_ui_x + 20, gauge_y, 25, gauge_h, "HL", left_thrust, sys_font_small, (0, 255, 128))
+            draw_motor_gauge(screen, left_ui_x + 90, gauge_y, 25, gauge_h, "HR", right_thrust, sys_font_small, (0, 255, 128))
+            
+            draw_status_box(screen, left_ui_x, 340, 170, 60, "VERTICAL DRIVE", 
+                            "ASCEND" if btn_lb else "DESCEND" if btn_rb else "IDLE", 
+                            btn_lb or btn_rb, sys_font_mid, (0, 200, 255))
+                            
+            # 夾爪 UI
+            draw_status_box(screen, left_ui_x, 415, 170, 60, "GRIPPER (A/D)", 
+                            "OPENING" if btn_grip_open else "CLOSING" if btn_grip_close else "HOLD", 
+                            btn_grip_open or btn_grip_close, sys_font_mid, (255, 150, 0))
+
+            # 右側控制儀表板
+            right_ui_x = WIDTH - 190
+            draw_motor_gauge(screen, right_ui_x + 30, gauge_y, 25, gauge_h, "V-DRV", vert_thrust, sys_font_small, (0, 200, 255))
+            draw_motor_gauge(screen, right_ui_x + 100, gauge_y, 25, gauge_h, "YAW", yaw_thrust, sys_font_small, (255, 200, 50))
+
+            draw_status_box(screen, right_ui_x, 340, 170, 60, "ATTITUDE RESET", 
+                            "RESETTING!" if trigger_hover_signal else "LOCKED" if hover_lock_state else "STANDBY", 
+                            hover_lock_state, sys_font_mid, (200, 100, 255))
+
+            mode_text = "MANUAL CONTROL"
+            mode_color = (0, 255, 128)
+            if auto_return_state == "COASTING":
+                mode_text = "AUTO: COASTING"
+                mode_color = (255, 200, 50)
+            elif auto_return_state == "RETURNING":
+                mode_text = "AUTO: RETURNING!"
+                mode_color = (255, 50, 50)
+
+            draw_status_box(screen, right_ui_x, 415, 170, 60, "SYSTEM MODE", 
+                            mode_text, auto_return_state != "OFF", sys_font_mid, mode_color)
+
+            # 底部系統資訊區 (軌跡緩衝區與傳輸數據)
+            buffer_y = 510
+            buffer_w = 560
+            buffer_x = (WIDTH - buffer_w) // 2  
+            
+            pygame.draw.rect(screen, (0, 0, 0, 180), (buffer_x, buffer_y, buffer_w, 15))
+            max_hist_display = 2000
+            hist_len = min(len(command_history), max_hist_display)
+            fill_width = int((hist_len / max_hist_display) * buffer_w)
+            pygame.draw.rect(screen, (0, 150, 255), (buffer_x, buffer_y, fill_width, 15))
+            
+            hist_text = sys_font_small.render(f"TRAJECTORY BUFFER: {len(command_history)} FRAMES", True, (200, 220, 255))
+            text_x = buffer_x + (buffer_w - hist_text.get_width()) // 2
+            pygame.draw.rect(screen, (0, 0, 0, 150), (text_x - 5, buffer_y - 20, hist_text.get_width() + 10, 16))
+            screen.blit(hist_text, (text_x, buffer_y - 20))
+
+            pygame.draw.rect(screen, (0, 0, 0, 200), (0, 560, WIDTH, 40))
+            raw_text = sys_font_small.render(f"TX DATASTREAM > {data_str}", True, (80, 255, 80))
+            screen.blit(raw_text, (20, 572))
+
+            pygame.display.flip()
+            time.sleep(0.05)
+
+    except KeyboardInterrupt:
+        print("\n使用者從鍵盤強制中斷。")
+    except Exception as e:
+        print(f"\n發生未預期錯誤: {e}")
+    finally:
+        exit_msg = ["0"] * 18
+        exit_msg[17] = "1"
+        try:
+            client.sendall((",".join(exit_msg) + "\n").encode())
+        except:
+            pass
+        client.close()
+        cap.release() 
+        pygame.quit()
+        print("程式已安全結束。")
+
+if __name__ == "__main__":
+    main()
