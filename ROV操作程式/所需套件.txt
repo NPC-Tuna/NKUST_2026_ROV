@@ -1,0 +1,35 @@
+========================================
+ROV 操作程式 - 所需套件清單
+========================================
+
+【主控端電腦】rov_control_final_ultra.py
+----------------------------------------
+套件名稱        說明
+--------        ----
+pygame          讀取搖桿輸入
+
+內建模組（不需安裝）：socket, math, os, time
+
+一鍵安裝指令：
+pip install pygame
+
+
+【樹莓派端】pi_control.py
+----------------------------------------
+套件名稱                            說明
+--------                            ----
+adafruit-blinka                     board / busio 硬體腳位與 I2C 介面
+adafruit-circuitpython-pca9685      PCA9685 PWM 控制器驅動
+adafruit-circuitpython-bno055       BNO055 IMU 感測器驅動
+
+內建模組（不需安裝）：socket, threading, time, math
+
+一鍵安裝指令：
+pip install adafruit-blinka adafruit-circuitpython-pca9685 adafruit-circuitpython-bno055
+
+注意事項：
+樹莓派需先啟用 I2C 介面
+指令：sudo raspi-config
+路徑：Interface Options -> I2C -> Enable
+
+========================================
