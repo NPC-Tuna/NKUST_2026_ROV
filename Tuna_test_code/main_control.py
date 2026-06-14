@@ -1,4 +1,7 @@
 import socket
+import os
+
+os.environ["SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS"] = "1"
 import pygame
 import time
 import sys
@@ -102,6 +105,7 @@ def main():
 
     cam_order = ["main", "bottom", "aux"]
     q_key_pressed = False
+    e_key_pressed = False
 
     while running:
         for event in pygame.event.get():
@@ -120,6 +124,30 @@ def main():
                 q_key_pressed = True
         else:
             q_key_pressed = False
+            
+        if keys[pygame.K_e]:
+            if not e_key_pressed:
+                current_main_cam = cam_order[0]  # 取得目前正在「左側大畫面」的鏡頭
+                
+                # 從鎖內快速把原始畫面拿出來
+                with frame_locks[current_main_cam]:
+                    frame_to_save = shared_frames[current_main_cam]
+                
+                if frame_to_save is not None:
+                    # 產生當前時間戳記 (例如 20260607_153022)
+                    timestamp = time.strftime("%Y%m%d_%H%M%S")
+                    
+                    # 動態抓取目前電腦的桌面路徑
+                    desktop_path = os.path.join(os.path.expanduser("~"), "Desktop")
+                    filename = os.path.join(desktop_path, f"ROV_{current_main_cam.upper()}_{timestamp}.jpg")
+                    
+                    # 儲存純淨的 OpenCV 原始畫面
+                    cv2.imwrite(filename, frame_to_save)
+                    print(f"[Screenshot] 📸 Image saved to: {filename}")
+                
+                e_key_pressed = True
+        else:
+            e_key_pressed = False
 
         try:
             raw_joy_x = joystick.get_axis(0)  
@@ -130,9 +158,29 @@ def main():
         joy_x = raw_joy_x if abs(raw_joy_x) > DEADZONE else 0.0
         joy_y = -raw_joy_y if abs(raw_joy_y) > DEADZONE else 0.0
 
-        btn_lb = joystick.get_button(4)   
-        btn_rb = joystick.get_button(5)   
-        joy_v = 1.0 if btn_rb else (-1.0 if btn_lb else 0.0)
+        try:
+            # Xbox 控制器的 LT 通常是 Axis 4，RT 是 Axis 5
+            raw_lt = joystick.get_axis(4)
+            raw_rt = joystick.get_axis(5)
+            
+            # Pygame 讀取扳機的原始值是 -1.0 (完全放開) 到 1.0 (按壓到底)
+            # 我們將其轉換為 0.0 到 1.0 的按壓比例
+            lt_pull = (raw_lt + 1.0) / 2.0
+            rt_pull = (raw_rt + 1.0) / 2.0
+            
+            # 加上死區 (DEADZONE) 判斷，避免手指輕放或搖桿老化導致的微小飄移
+            lt_pull = lt_pull if lt_pull > DEADZONE else 0.0
+            rt_pull = rt_pull if rt_pull > DEADZONE else 0.0
+            
+            # 整合上下指令：RT 負責上浮 (正推力)，LT 負責下沉 (負推力)
+            # 這樣如果你同時按到底，推力會互相抵消變成 0
+            joy_v = rt_pull - lt_pull
+            
+            # 加上安全鎖：確保數值永遠在 -1.0 到 1.0 之間
+            joy_v = max(min(joy_v, 1.0), -1.0)
+            
+        except Exception:
+            joy_v = 0.0
 
         msg[1] = f"{joy_x:.4f}"           
         msg[2] = f"{joy_y:.4f}"           
